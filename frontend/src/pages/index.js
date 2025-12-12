@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect } from "react";
 import { ethers } from "ethers";
 import { Chess } from "chess.js";
 import { Chessboard } from "react-chessboard";
 import { 
   Trophy, Wallet, History, Activity, 
-  Copy, ShieldCheck, Swords, AlertCircle, 
-  CheckCircle2, Loader2, Zap, PenTool, Lock, RefreshCw
+  Copy, CheckCircle2, Loader2, Zap, PenTool, Lock, RefreshCw, Swords, AlertCircle
 } from "lucide-react";
 
 // --- CONTRACT CONFIGURATION ---
@@ -16,7 +15,6 @@ const CONTRACT_ABI = [
   "function joinGame(uint256 _gameId) external payable",
   "function reportWin(uint256 _gameId, bytes calldata _signature) external",
   "function getGameInfo(uint256 _gameId) external view returns (address p1, address p2, uint256 wager, bool active, address winner)",
-  "function claimTimeout(uint256 _gameId) external",
   "event GameCreated(uint256 indexed gameId, address indexed creator, uint256 wager)",
   "event PlayerJoined(uint256 indexed gameId, address indexed opponent)",
   "event GameEnded(uint256 indexed gameId, address indexed winner, uint256 payout)"
@@ -34,7 +32,8 @@ export default function AdvancedChessPlatform() {
   
   const [gameId, setGameId] = useState("");
   const [gameData, setGameData] = useState(null);
-  const [loserSignature, setLoserSignature] = useState(null);
+  // We do NOT clear this on account change so you can test locally (Sign as P1 -> Switch -> Claim as P2)
+  const [loserSignature, setLoserSignature] = useState(null); 
   
   const [inputGameId, setInputGameId] = useState("");
   const [status, setStatus] = useState("System Ready. Connect Wallet.");
@@ -52,8 +51,8 @@ export default function AdvancedChessPlatform() {
       if (newAccounts.length > 0) {
         const newWallet = newAccounts[0];
         setWallet(newWallet);
-        updateStatus(`Switched to: ${shortAddr(newWallet)}`, "neutral");
-
+        // Note: We intentionally don't clear loserSignature here to allow local testing flow
+        
         // Rebuild Signer & Contract
         const newProvider = new ethers.BrowserProvider(window.ethereum);
         const newSigner = await newProvider.getSigner();
@@ -65,6 +64,7 @@ export default function AdvancedChessPlatform() {
 
         const newBal = await newProvider.getBalance(newWallet);
         setBalance(ethers.formatEther(newBal));
+        updateStatus(`Switched to: ${shortAddr(newWallet)}`, "neutral");
 
         if (gameId) {
           fetchGameData(gameId, newContract);
@@ -218,21 +218,18 @@ export default function AdvancedChessPlatform() {
       setGame(tempGame);
       setMoveHistory(prev => [...prev, move.san]);
       
-      if (tempGame.isCheckmate()) handleCheckmate(tempGame);
+      if (tempGame.isCheckmate()) {
+        const turn = tempGame.turn(); // 'w' or 'b' - this is the LOSER
+        const loserAddr = turn === 'w' ? gameData?.p1 : gameData?.p2;
+        
+        if (loserAddr && wallet.toLowerCase() === loserAddr.toLowerCase()) {
+          updateStatus("Checkmate! You lost. Please sign defeat.", "warning");
+        } else {
+          updateStatus("Victory! Waiting for opponent to sign...", "success");
+        }
+      }
       return true;
     } catch (e) { return false; }
-  }
-
-  function handleCheckmate(finalGame) {
-    const loserColor = finalGame.turn(); 
-    const loserAddress = (loserColor === 'w') ? gameData.p1 : gameData.p2;
-    const amILoser = wallet.toLowerCase() === loserAddress.toLowerCase();
-    
-    if (amILoser) {
-      updateStatus("Checkmate! You lost. Sign defeat to settle.", "warning");
-    } else {
-      updateStatus("Victory! Waiting for opponent signature...", "success");
-    }
   }
 
   async function signDefeat() {
@@ -241,12 +238,13 @@ export default function AdvancedChessPlatform() {
       updateStatus("Signing Proof of Loss...", "loading");
       const signer = await provider.getSigner(); 
       
+      // Ensure type alignment with Solidity (uint256, string)
       const messageHash = ethers.solidityPackedKeccak256(["uint256", "string"], [gameId, "loss"]);
       const messageBytes = ethers.getBytes(messageHash);
       const signature = await signer.signMessage(messageBytes);
       
       setLoserSignature(signature);
-      updateStatus("Signed. Switch to Winner account to claim.", "success");
+      updateStatus("Signed! Please switch account to Winner to claim.", "success");
     } catch (err) {
       handleError(err);
     }
@@ -256,6 +254,7 @@ export default function AdvancedChessPlatform() {
     if (!loserSignature) return updateStatus("Missing Signature!", "error");
     try {
       updateStatus("Claiming Prize on Blockchain...", "loading");
+      // The signature contains the Loser's authorization. The Winner (msg.sender) submits it.
       const tx = await contract.reportWin(gameId, loserSignature);
       await tx.wait();
       
@@ -271,12 +270,11 @@ export default function AdvancedChessPlatform() {
     console.error(err);
     let msg = err.reason || err.message || "Unknown Error";
     
-    if (msg.includes("insufficient funds")) msg = "Insufficient Funds (Need 1 ETH + Gas)";
-    if (msg.includes("user rejected")) msg = "Transaction Rejected by User";
-    if (msg.includes("Game is not active")) msg = "Game is not active or already finished";
-    if (msg.includes("Game is already full")) msg = "Game is already full!";
+    if (msg.includes("insufficient funds")) msg = "Insufficient Funds";
+    if (msg.includes("user rejected")) msg = "Transaction Rejected";
+    if (msg.includes("Invalid signature")) msg = "Error: Wrong person signed! Loser must sign.";
     
-    updateStatus(`Error: ${msg}`, "error");
+    updateStatus(`${msg}`, "error");
   }
 
   function updateStatus(msg, type) {
@@ -284,9 +282,22 @@ export default function AdvancedChessPlatform() {
     setStatusType(type);
   }
 
+  // --- DERIVED STATE & HELPER VARIABLES ---
   const isPlayer1 = gameData?.p1?.toLowerCase() === wallet.toLowerCase();
   const isGameFull = gameData?.p2 && gameData.p2 !== ethers.ZeroAddress;
   const canJoin = wallet && (inputGameId || gameId) && !isPlayer1 && !isGameFull;
+
+  // Determine actual Winner/Loser based on Board State
+  let loserAddress = null;
+  let winnerAddress = null;
+  if (game.isCheckmate()) {
+    const loserColor = game.turn(); // 'w' or 'b'
+    loserAddress = loserColor === 'w' ? gameData?.p1 : gameData?.p2;
+    winnerAddress = loserColor === 'w' ? gameData?.p2 : gameData?.p1;
+  }
+
+  const isMyTurnToSign = loserAddress && wallet.toLowerCase() === loserAddress.toLowerCase();
+  const isMyTurnToClaim = winnerAddress && wallet.toLowerCase() === winnerAddress.toLowerCase();
 
   if (!isClient) return null;
 
@@ -369,7 +380,6 @@ export default function AdvancedChessPlatform() {
                <span className="text-[10px] bg-indigo-500/10 text-indigo-400 px-2 py-1 rounded border border-indigo-500/20 font-mono">Wager: 1.0 ETH</span>
             </div>
 
-            {/* CREATE */}
             <button 
               onClick={createGame}
               disabled={!wallet || gameId}
@@ -378,7 +388,6 @@ export default function AdvancedChessPlatform() {
               Create Match (Deposit 1 ETH)
             </button>
             
-            {/* JOIN */}
             <div className="flex gap-2">
               <input 
                 type="text" 
@@ -392,11 +401,10 @@ export default function AdvancedChessPlatform() {
                 disabled={!canJoin} 
                 className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white px-6 rounded-xl font-bold text-sm transition-all disabled:opacity-50 whitespace-nowrap"
               >
-                {isPlayer1 ? "You are P1" : isGameFull ? "Game Full" : "Join (Pay 1 ETH)"}
+                {isPlayer1 ? "You are P1" : isGameFull ? "Game Full" : "Join"}
               </button>
             </div>
 
-            {/* Active Game Info - FIX APPLIED HERE */}
             {gameId && (
                <div className="mt-2 bg-emerald-900/10 border border-emerald-500/20 p-3 rounded-lg flex flex-col gap-2 animate-in fade-in">
                  <div className="flex justify-between items-center">
@@ -417,32 +425,62 @@ export default function AdvancedChessPlatform() {
             )}
           </div>
 
-          {/* Settlement Protocol */}
+          {/* SETTLEMENT PROTOCOL - STRICT UI CONTROL */}
           {(loserSignature || game.isGameOver()) && (
             <div className="bg-gradient-to-br from-amber-900/20 to-orange-900/20 border border-amber-500/30 rounded-2xl p-6 shadow-2xl animate-in fade-in slide-in-from-bottom-4">
               <div className="flex items-center gap-2 mb-4 text-amber-400 font-bold text-sm uppercase tracking-wider">
                 <Lock size={16}/> Settlement Protocol
               </div>
               <div className="space-y-3">
+                
+                {/* BUTTON 1: SIGN DEFEAT */}
                 <button 
                   onClick={signDefeat}
-                  disabled={loserSignature} 
+                  // ONLY enable if it is MY turn to sign (I am the Loser)
+                  disabled={loserSignature || !isMyTurnToSign} 
                   className={`w-full py-3 rounded-xl border flex items-center justify-center gap-2 text-sm font-bold transition-all ${
                     loserSignature 
                     ? "bg-emerald-500/10 border-emerald-500/50 text-emerald-400 cursor-default" 
-                    : "bg-amber-500/20 border-amber-500/50 text-amber-200 hover:bg-amber-500/30"
+                    : isMyTurnToSign
+                        ? "bg-amber-500/20 border-amber-500/50 text-amber-200 hover:bg-amber-500/30"
+                        : "bg-slate-800 border-slate-700 text-slate-500 cursor-not-allowed opacity-50"
                   }`}
                 >
                   {loserSignature ? <CheckCircle2 size={16}/> : <PenTool size={16}/>}
-                  {loserSignature ? "Signature Verified" : "Step 1: Loser Signs Defeat"}
+                  {loserSignature 
+                    ? "Step 1: Defeat Signed" 
+                    : isMyTurnToSign 
+                        ? "Step 1: Sign Defeat (You Lost)" 
+                        : "Step 1: Waiting for Loser to Sign..."}
                 </button>
+
+                {/* BUTTON 2: CLAIM PRIZE */}
                 <button 
                   onClick={claimPrize}
-                  disabled={!loserSignature}
-                  className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 text-white py-3 rounded-xl font-bold transition-all shadow-lg flex items-center justify-center gap-2"
+                  // ONLY enable if Signature exists AND I am the Winner
+                  disabled={!loserSignature || !isMyTurnToClaim}
+                  className={`w-full py-3 rounded-xl font-bold transition-all shadow-lg flex items-center justify-center gap-2 ${
+                    (!loserSignature || !isMyTurnToClaim)
+                        ? "bg-slate-800 text-slate-500 cursor-not-allowed"
+                        : "bg-emerald-600 hover:bg-emerald-500 text-white"
+                  }`}
                 >
-                  <Trophy size={16} /> Step 2: Winner Claims Funds
+                  <Trophy size={16} /> 
+                  {isMyTurnToClaim 
+                    ? "Step 2: Claim Prize (Winner)" 
+                    : "Step 2: Waiting for Winner to Claim"}
                 </button>
+
+              </div>
+              
+              {/* Helper text for local testing */}
+              <div className="mt-3 text-[10px] text-center text-slate-500">
+                {!loserSignature && !isMyTurnToSign && (
+                   <p>Switch MetaMask to the <strong>Loser's account</strong> to sign.</p>
+                )}
+                {loserSignature && !isMyTurnToClaim && (
+                   <p>Switch MetaMask to the <strong>Winner's account</strong> to claim.</p>
+                )}
               </div>
             </div>
           )}
