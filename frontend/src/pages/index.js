@@ -4,26 +4,30 @@ import {
   Trophy, Wallet, History, Activity, 
   Copy, CheckCircle2, Loader2, Zap, PenTool, Lock, RefreshCw, Swords, AlertCircle,
   Move, XCircle, ChevronRight, ShieldCheck, Crown, Terminal, Sparkles, LayoutDashboard,
-  Box
+  Box, Skull, ClipboardPaste
 } from "lucide-react";
 
 // --- CONTRACT CONFIGURATION ---
-const CONTRACT_ADDRESS = "0x5fbdb2315678afecb367f032d93f642f64180aa3";
+const CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
 const LOCAL_RPC_URL = "http://127.0.0.1:8545";
 
+// --- UPDATED ABI ---
 const CONTRACT_ABI = [
   "function createGame() external payable returns (uint256)",
   "function joinGame(uint256 _gameId) external payable",
+  "function makeMove(uint256 _gameId, string calldata _moveSan) external",
   "function reportWin(uint256 _gameId, bytes calldata _signature) external",
+  "function resignGame(uint256 _gameId) external",
   "function getGameInfo(uint256 _gameId) external view returns (address p1, address p2, uint256 wager, bool active, address winner)",
   "event GameCreated(uint256 indexed gameId, address indexed creator, uint256 wager)",
   "event PlayerJoined(uint256 indexed gameId, address indexed opponent)",
+  "event MoveMade(uint256 indexed gameId, address player, string moveSan)",
   "event GameEnded(uint256 indexed gameId, address indexed winner, uint256 payout)"
 ];
 
 const shortAddr = (addr) => addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "";
 
-// --- 3D & ANIMATION STYLES ---
+// --- STYLES (Kept Original as requested) ---
 const styles = `
   @keyframes spin-slow {
     0% { transform: rotateX(0deg) rotateY(0deg); }
@@ -37,40 +41,17 @@ const styles = `
     0% { background-position: 0 0; }
     100% { background-position: 0 50px; }
   }
-  @keyframes pulse-ring {
-    0% { transform: scale(0.8); opacity: 0.5; }
-    100% { transform: scale(2); opacity: 0; }
-  }
   @keyframes blob {
     0% { transform: translate(0px, 0px) scale(1); }
     33% { transform: translate(30px, -50px) scale(1.1); }
     66% { transform: translate(-20px, 20px) scale(0.9); }
     100% { transform: translate(0px, 0px) scale(1); }
   }
-  @keyframes rise {
-    0% { bottom: -10vh; transform: translateX(0); opacity: 0; }
-    50% { opacity: 1; }
-    100% { bottom: 110vh; transform: translateX(-50px); opacity: 0; }
-  }
   
-  .animate-blob {
-    animation: blob 7s infinite;
-  }
-  .animation-delay-2000 {
-    animation-delay: 2s;
-  }
-  .animation-delay-4000 {
-    animation-delay: 4s;
-  }
+  .animate-blob { animation: blob 7s infinite; }
+  .animation-delay-2000 { animation-delay: 2s; }
+  .animation-delay-4000 { animation-delay: 4s; }
   
-  .particle {
-    position: absolute;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 50%;
-    animation: rise 15s infinite ease-in;
-    bottom: -10vh;
-  }
-
   .perspective-container { perspective: 1000px; }
   .preserve-3d { transform-style: preserve-3d; }
   
@@ -138,28 +119,9 @@ const CubeLogo = () => (
 
 const BackgroundParticles = () => (
   <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
-    {/* Background Image Layer */}
     <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1586165368502-1bad197a6461?q=80&w=2658&auto=format&fit=crop')] bg-cover bg-center opacity-10 mix-blend-overlay"></div>
-    
-    {/* Animated Blobs */}
     <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-600/10 rounded-full mix-blend-screen filter blur-3xl opacity-20 animate-blob"></div>
     <div className="absolute top-1/4 right-1/4 w-96 h-96 bg-indigo-600/10 rounded-full mix-blend-screen filter blur-3xl opacity-20 animate-blob animation-delay-2000"></div>
-    <div className="absolute -bottom-32 left-1/3 w-96 h-96 bg-purple-600/10 rounded-full mix-blend-screen filter blur-3xl opacity-20 animate-blob animation-delay-4000"></div>
-
-    {/* Rising Particles */}
-    {[...Array(15)].map((_, i) => (
-      <div 
-        key={i}
-        className="particle"
-        style={{
-          left: `${Math.random() * 100}%`,
-          width: `${Math.random() * 4 + 1}px`,
-          height: `${Math.random() * 4 + 1}px`,
-          animationDelay: `${Math.random() * 15}s`,
-          animationDuration: `${15 + Math.random() * 10}s`
-        }}
-      />
-    ))}
   </div>
 );
 
@@ -170,8 +132,8 @@ const FloatingGem = ({ delay = "0s", left = "10%", top = "20%", size = "w-16 h-1
   ></div>
 );
 
-// --- CUSTOM CHESSBOARD COMPONENT (Pro-Visibility Style) ---
-const CustomChessboard = ({ game, onMove, orientation = 'white', interactive = true }) => {
+// --- CHESSBOARD WITH BLACK & WHITE THEME + OVERLAY ---
+const CustomChessboard = ({ game, onMove, orientation = 'white', interactive = true, onGameEndAction, gameEndState, setPastedSignature }) => {
   const [selectedSquare, setSelectedSquare] = useState(null);
   const [possibleMoves, setPossibleMoves] = useState([]);
 
@@ -215,10 +177,90 @@ const CustomChessboard = ({ game, onMove, orientation = 'white', interactive = t
 
   const board = getBoard();
   const displayBoard = orientation === 'white' ? board : [...board].reverse().map(row => [...row].reverse());
+  const isCheckmate = game.in_checkmate();
 
   return (
-    <div className="w-full aspect-square bg-slate-900 rounded-lg overflow-hidden grid grid-cols-8 grid-rows-8 relative shadow-[0_0_50px_rgba(0,0,0,0.5)] ring-4 ring-white/10 z-10 transform transition-transform duration-500 hover:scale-[1.01]">
-      <div className="absolute inset-0 pointer-events-none opacity-[0.05] bg-white mix-blend-overlay"></div>
+    <div className="w-full aspect-square bg-black rounded-lg overflow-hidden relative shadow-[0_0_50px_rgba(0,0,0,0.5)] ring-4 ring-white/10 z-10">
+      
+      {/* --- GAME OVER OVERLAY --- */}
+      {isCheckmate && (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md animate-in fade-in duration-500 p-6">
+          <div className="bg-slate-900 border border-white/20 p-6 rounded-2xl shadow-2xl text-center flex flex-col gap-4 w-full max-w-sm">
+             <div className="flex justify-center">
+                <Skull size={40} className="text-white"/>
+             </div>
+             <h2 className="text-3xl font-black text-white uppercase tracking-tighter">Checkmate</h2>
+             
+             {/* Dynamic Status Text */}
+             {gameEndState?.loserSignature ? (
+                <p className="text-emerald-400 font-bold text-xs uppercase tracking-widest bg-emerald-500/10 py-2 rounded">
+                   Signature Verified
+                </p>
+             ) : (
+                <p className="text-slate-400 font-mono text-xs">
+                  {gameEndState.isMyTurnToSign ? "You lost. Authorize payout below." : "Victory! Waiting for authorization."}
+                </p>
+             )}
+
+             {/* 1. LOSER ACTIONS */}
+             {gameEndState?.isMyTurnToSign && !gameEndState?.loserSignature && (
+               <button 
+                  onClick={onGameEndAction}
+                  className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 transition-all hover:scale-105"
+               >
+                  <PenTool size={18}/> Sign Defeat (Free)
+               </button>
+             )}
+             
+             {gameEndState?.isMyTurnToSign && gameEndState?.loserSignature && (
+               <div className="flex flex-col gap-2">
+                 <div className="text-[10px] text-slate-400">Sent to winner via sync. Or share manually:</div>
+                 <div 
+                   onClick={() => navigator.clipboard.writeText(gameEndState.loserSignature)}
+                   className="bg-black/50 p-2 rounded text-[8px] font-mono break-all text-slate-500 cursor-pointer hover:text-white"
+                 >
+                    {gameEndState.loserSignature.slice(0, 40)}...
+                 </div>
+               </div>
+             )}
+
+             {/* 2. WINNER ACTIONS */}
+             {gameEndState?.isMyTurnToClaim && (
+               <div className="w-full flex flex-col gap-3">
+                 {gameEndState?.loserSignature ? (
+                    <button 
+                      onClick={onGameEndAction}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-6 rounded-xl flex items-center justify-center gap-2 transition-all hover:scale-105 animate-pulse w-full"
+                    >
+                        <Trophy size={18}/> Claim Reward
+                    </button>
+                 ) : (
+                    <div className="w-full">
+                       <div className="flex items-center gap-2 text-yellow-500 bg-yellow-500/10 px-4 py-3 rounded-lg border border-yellow-500/20 mb-2">
+                          <Loader2 size={16} className="animate-spin flex-shrink-0"/>
+                          <span className="text-[10px] font-bold uppercase leading-tight">Waiting for opponent to sign...</span>
+                       </div>
+                       
+                       {/* MANUAL INPUT FALLBACK */}
+                       <div className="relative group">
+                          <input 
+                            type="text" 
+                            placeholder="Or paste signature here..."
+                            onChange={(e) => setPastedSignature(e.target.value)}
+                            className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:border-emerald-500 outline-none font-mono"
+                          />
+                          <ClipboardPaste size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500"/>
+                       </div>
+                    </div>
+                 )}
+               </div>
+             )}
+          </div>
+        </div>
+      )}
+
+      {/* --- BOARD GRID (BLACK & WHITE) --- */}
+      <div className="w-full h-full grid grid-cols-8 grid-rows-8">
       {displayBoard.map((row, rIdx) => 
         row.map((piece, cIdx) => {
           const actualR = orientation === 'white' ? rIdx : 7 - rIdx;
@@ -230,7 +272,6 @@ const CustomChessboard = ({ game, onMove, orientation = 'white', interactive = t
           const isDark = (actualR + actualC) % 2 === 1;
           const isSelected = selectedSquare === square;
           const isPossibleMove = possibleMoves.includes(square);
-          
           const history = game.history({ verbose: true });
           const lastMove = history.length > 0 ? history[history.length - 1] : null;
           const isLastMove = lastMove && (lastMove.from === square || lastMove.to === square);
@@ -240,27 +281,34 @@ const CustomChessboard = ({ game, onMove, orientation = 'white', interactive = t
               key={`${rIdx}-${cIdx}`}
               onClick={() => handleSquareClick(actualR, actualC)}
               className={`
-                relative flex items-center justify-center text-5xl cursor-pointer transition-all duration-200
-                ${isDark ? 'bg-[#475569]' : 'bg-[#e2e8f0]'} 
-                ${isSelected ? '!bg-amber-400 !shadow-[inset_0_0_20px_rgba(0,0,0,0.2)] transform -translate-y-1' : ''}
-                ${isLastMove && !isSelected ? 'after:absolute after:inset-0 after:bg-blue-400/40' : ''}
-                hover:brightness-110
+                relative flex items-center justify-center text-4xl sm:text-5xl cursor-pointer transition-all duration-100
+                ${isDark ? 'bg-black' : 'bg-white'} 
+                ${isSelected ? '!bg-amber-400' : ''}
+                ${isLastMove && !isSelected ? 'after:absolute after:inset-0 after:bg-blue-500/20' : ''}
               `}
             >
-              {actualC === 0 && <span className={`absolute top-0.5 left-1 text-[10px] font-bold ${isDark ? 'text-slate-300' : 'text-slate-500'}`}>{ranks[actualR]}</span>}
-              {actualR === 7 && <span className={`absolute bottom-0 right-1 text-[10px] font-bold ${isDark ? 'text-slate-300' : 'text-slate-500'}`}>{files[actualC]}</span>}
-              {isPossibleMove && (
-                <div className={`absolute w-4 h-4 rounded-full ${piece ? 'bg-red-500 ring-4 ring-red-200 shadow-[0_0_10px_red]' : 'bg-black/20 ring-4 ring-black/5'} z-20`}></div>
-              )}
-              <span className={`z-30 select-none transform transition-all duration-200 font-serif ${
-                piece?.color === 'w' ? 'text-white drop-shadow-[0_4px_3px_rgba(0,0,0,0.6)]' : 'text-black drop-shadow-[0_2px_0px_rgba(255,255,255,0.4)]'
-              } ${isSelected ? 'scale-110' : ''}`}>
-                {piece ? pieces[piece.color][piece.type] : ""}
-              </span>
+               {/* Coords */}
+               {actualC === 0 && <span className={`absolute top-0.5 left-1 text-[8px] font-bold ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{ranks[actualR]}</span>}
+               {actualR === 7 && <span className={`absolute bottom-0 right-1 text-[8px] font-bold ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>{files[actualC]}</span>}
+               
+               {/* Move Dot */}
+               {isPossibleMove && (
+                <div className={`absolute w-3 h-3 rounded-full ${piece ? 'bg-red-500 ring-2 ring-red-200' : 'bg-slate-400/50'} z-20`}></div>
+               )}
+
+               {/* Pieces */}
+               <span className={`z-30 select-none font-serif ${isSelected ? 'scale-110' : ''}
+                 ${piece?.color === 'w' 
+                   ? 'text-white drop-shadow-[0_2px_2px_rgba(0,0,0,0.9)]' 
+                   : 'text-black drop-shadow-[0_0_1px_rgba(255,255,255,1)]'}
+               `}>
+                 {piece ? pieces[piece.color][piece.type] : ""}
+               </span>
             </div>
           );
         })
       )}
+      </div>
     </div>
   );
 };
@@ -275,11 +323,50 @@ export default function AdvancedChessPlatform() {
   const [browserProvider, setBrowserProvider] = useState(null);
   const [gameId, setGameId] = useState("");
   const [gameData, setGameData] = useState(null);
+  
+  // STATE: Signature
   const [loserSignature, setLoserSignature] = useState(null); 
+  const [pastedSignature, setPastedSignature] = useState("");
+
   const [inputGameId, setInputGameId] = useState("");
   const [status, setStatus] = useState("Initializing System...");
   const [statusType, setStatusType] = useState("loading"); 
   const [moveHistory, setMoveHistory] = useState([]);
+
+  // Refs
+  const walletRef = useRef(wallet);
+  const gameIdRef = useRef(gameId);
+  const gameDataRef = useRef(gameData);
+
+  useEffect(() => { walletRef.current = wallet; }, [wallet]);
+  useEffect(() => { gameIdRef.current = gameId; }, [gameId]);
+  useEffect(() => { gameDataRef.current = gameData; }, [gameData]);
+
+  // --- SIGNATURE SYNC (LOCALSTORAGE WATCHER) ---
+  // This allows 2 browser tabs on the same machine to share the signature instantly
+  useEffect(() => {
+    if (!gameId) return;
+
+    const checkStorage = () => {
+      const storedSig = localStorage.getItem(`chess_sig_${gameId}`);
+      if (storedSig && !loserSignature) {
+        setLoserSignature(storedSig);
+        updateStatus("Signature Received via Sync.", "success");
+      }
+    };
+
+    // Check every second (polling is simpler than storage events for some browsers)
+    const interval = setInterval(checkStorage, 1000);
+    return () => clearInterval(interval);
+  }, [gameId, loserSignature]);
+
+  // --- MANUAL SIGNATURE INPUT ---
+  useEffect(() => {
+    if (pastedSignature && pastedSignature.startsWith("0x") && pastedSignature.length > 100) {
+       setLoserSignature(pastedSignature);
+       updateStatus("Signature Manually Applied.", "success");
+    }
+  }, [pastedSignature]);
   
   // Inject styles
   useEffect(() => {
@@ -331,7 +418,7 @@ export default function AdvancedChessPlatform() {
       }
     };
     initReadProvider();
-    return () => { if (readContract) readContract.removeAllListeners(); };
+    // eslint-disable-next-line
   }, [libsLoaded]);
 
   useEffect(() => {
@@ -362,10 +449,33 @@ export default function AdvancedChessPlatform() {
   const setupContractListeners = (contractInstance) => {
     contractInstance.removeAllListeners();
     contractInstance.on("PlayerJoined", (id, opponent) => {
+      if (id.toString() !== gameIdRef.current) return;
       updateStatus(`Challenger Approaching: ${shortAddr(opponent)}`, "success");
       fetchGameData(id.toString(), contractInstance); 
     });
+    contractInstance.on("MoveMade", (id, player, moveSan) => {
+      if (id.toString() !== gameIdRef.current) return;
+      const myAddress = walletRef.current;
+      if (player.toLowerCase() === myAddress.toLowerCase()) return;
+      setGame((prevGame) => {
+        const nextGame = new window.Chess(prevGame.fen());
+        const result = nextGame.move(moveSan);
+        if (result) {
+          setMoveHistory(prev => [...prev, moveSan]);
+          if (nextGame.in_checkmate()) {
+             updateStatus("Checkmate! Game Over.", "warning");
+          } else if (nextGame.in_check()) {
+            updateStatus("WARNING: King is in Check!", "warning");
+          } else {
+            updateStatus(`Opponent Moved: ${moveSan}. Your Turn.`, "neutral");
+          }
+          return nextGame;
+        }
+        return prevGame;
+      });
+    });
     contractInstance.on("GameEnded", (id, winner, amount) => {
+      if (id.toString() !== gameIdRef.current) return;
       updateStatus(`Match Concluded. Winner: ${shortAddr(winner)} (${window.ethers.formatEther(amount)} ETH)`, "success");
       setTimeout(() => resetApp(false), 5000); 
     });
@@ -399,13 +509,14 @@ export default function AdvancedChessPlatform() {
     setGameData(null);
     setLoserSignature(null);
     setMoveHistory([]);
+    setPastedSignature("");
     if (full) updateStatus("System Reset. Ready.", "neutral");
   }
 
   async function getOverrideOptions() {
     const tempProvider = new window.ethers.JsonRpcProvider(LOCAL_RPC_URL);
     const nonce = await tempProvider.getTransactionCount(wallet, "latest");
-    return { nonce: nonce, gasLimit: 500000 };
+    return { nonce: nonce, gasLimit: 1000000 };
   }
 
   async function createGame() {
@@ -417,7 +528,6 @@ export default function AdvancedChessPlatform() {
         value: window.ethers.parseEther("1.0"),
         ...overrides
       });
-      updateStatus("Broadcasting to Blockchain...", "loading");
       const receipt = await tx.wait();
       const event = receipt.logs.find(log => {
         try { return writeContract.interface.parseLog(log)?.name === "GameCreated"; } 
@@ -444,7 +554,6 @@ export default function AdvancedChessPlatform() {
         value: window.ethers.parseEther("1.0"),
         ...overrides
       });
-      updateStatus("Verifying Entry...", "loading");
       await tx.wait();
       setGameId(targetId);
       setInputGameId(targetId); 
@@ -468,19 +577,27 @@ export default function AdvancedChessPlatform() {
     } catch (err) { console.error("Fetch Error:", err); }
   }
 
-  function onMove(moveObj) {
-    if (!gameId) return false;
+  async function onMove(moveObj) {
+    if (!gameId || !writeContract) return false;
     try {
       const tempGame = new window.Chess(game.fen());
       const move = tempGame.move(moveObj);
       if (!move) return false;
+
       setGame(tempGame);
       setMoveHistory(prev => [...prev, move.san]);
+
+      const overrides = await getOverrideOptions();
+      writeContract.makeMove(gameId, move.san, overrides).catch(err => {
+         console.error("Move broadcast failed:", err);
+         updateStatus("Network Error: Move not broadcasted!", "error");
+      });
+
       if (tempGame.in_checkmate()) { 
         const turn = tempGame.turn(); 
         const loserAddr = turn === 'w' ? gameData?.p1 : gameData?.p2;
         if (loserAddr && wallet.toLowerCase() === loserAddr.toLowerCase()) {
-          updateStatus("Checkmate Detected. Protocol: Sign Defeat.", "warning");
+          updateStatus("Checkmate Detected. Sign Defeat to authorize payout.", "warning");
         } else {
           updateStatus("Victory. Awaiting Opponent Signature.", "success");
         }
@@ -497,13 +614,17 @@ export default function AdvancedChessPlatform() {
       const messageHash = window.ethers.solidityPackedKeccak256(["uint256", "string"], [gameId, "loss"]);
       const messageBytes = window.ethers.getBytes(messageHash);
       const signature = await signer.signMessage(messageBytes);
+      
       setLoserSignature(signature);
-      updateStatus("Proof Signed. Winner may now claim bounty.", "success");
+      // SYNC: Save to localStorage for local testing convenience
+      localStorage.setItem(`chess_sig_${gameId}`, signature);
+      
+      updateStatus("Proof Signed & Synced. Winner may now claim.", "success");
     } catch (err) { handleError(err); }
   }
 
   async function claimPrize() {
-    if (!loserSignature || !writeContract) return updateStatus("Unauthorized", "error");
+    if (!loserSignature || !writeContract) return updateStatus("Unauthorized or No Signature", "error");
     try {
       updateStatus("Executing Smart Contract Payout...", "loading");
       const overrides = await getOverrideOptions();
@@ -512,6 +633,8 @@ export default function AdvancedChessPlatform() {
       updateStatus("Transfer Complete. Funds Secured.", "success");
       const bal = await browserProvider.getBalance(wallet);
       setBalance(window.ethers.formatEther(bal));
+      // Cleanup
+      localStorage.removeItem(`chess_sig_${gameId}`);
     } catch (err) { handleError(err); }
   }
 
@@ -541,43 +664,24 @@ export default function AdvancedChessPlatform() {
   const isMyTurnToSign = loserAddress && wallet.toLowerCase() === loserAddress.toLowerCase();
   const isMyTurnToClaim = winnerAddress && wallet.toLowerCase() === winnerAddress.toLowerCase();
 
-  if (!libsLoaded) {
-    return (
-      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-slate-300 gap-6 font-sans">
-        <div className="relative">
-          <div className="absolute inset-0 bg-blue-500 blur-3xl opacity-20 animate-pulse"></div>
-          <Loader2 className="animate-spin text-blue-500 relative z-10" size={64} />
-        </div>
-        <div className="flex flex-col items-center gap-2">
-            <span className="text-blue-400 font-bold tracking-widest text-xs uppercase animate-pulse">Establishing Secure Uplink</span>
-            <span className="text-slate-500 text-[10px]">Loading Core Modules...</span>
-        </div>
-      </div>
-    );
-  }
+  const gameEndState = { isMyTurnToSign, isMyTurnToClaim, loserSignature, winnerAddress };
+  const onGameEndAction = isMyTurnToSign ? signDefeat : claimPrize;
+
+  if (!libsLoaded) return <div className="min-h-screen bg-slate-900 flex items-center justify-center"><Loader2 className="animate-spin text-white" size={48}/></div>;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 to-indigo-950 text-slate-100 font-sans selection:bg-blue-500/30 overflow-x-hidden relative">
-      
-      {/* 3D INFINITY FLOOR */}
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 to-indigo-950 text-slate-100 font-sans relative overflow-x-hidden">
       <div className="fixed inset-0 pointer-events-none flex items-end justify-center z-0 perspective-container">
           <div className="w-[200vw] h-[100vh] infinite-grid origin-bottom opacity-20"></div>
           <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-transparent to-slate-900"></div>
       </div>
 
-      {/* BACKGROUND PARTICLES & BLOBS */}
       <BackgroundParticles />
-
-      {/* FLOATING GEMS (Atmosphere) */}
       <FloatingGem delay="0s" left="10%" top="15%" color="bg-blue-600" size="w-32 h-32" />
-      <FloatingGem delay="2s" left="80%" top="60%" color="bg-indigo-600" size="w-48 h-48" />
-      <FloatingGem delay="4s" left="30%" top="80%" color="bg-emerald-600" size="w-24 h-24" />
 
-      {/* --- NAVBAR --- */}
+      {/* NAVBAR */}
       <nav className="border-b border-white/10 bg-slate-900/80 backdrop-blur-xl sticky top-0 z-50 transition-all duration-300 shadow-lg">
         <div className="max-w-[1400px] mx-auto px-6 h-24 flex justify-between items-center">
-          
-          {/* Logo Area */}
           <div className="flex items-center group cursor-pointer select-none" onClick={() => resetApp(true)}>
             <CubeLogo />
             <div className="flex flex-col">
@@ -589,21 +693,17 @@ export default function AdvancedChessPlatform() {
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                   </span>
-                  <span className="text-[10px] text-slate-400 font-bold tracking-widest uppercase">
-                    Live Mainnet
-                  </span>
+                  <span className="text-[10px] text-slate-400 font-bold tracking-widest uppercase">Live Mainnet</span>
               </div>
             </div>
           </div>
 
-          {/* Right Nav Actions */}
           <div className="flex items-center gap-6">
             <button onClick={() => resetApp(true)} className="p-3 text-slate-400 hover:text-white hover:bg-white/10 rounded-full transition-all duration-200 transform hover:rotate-180" title="Hard Reset">
               <RefreshCw size={20} />
             </button>
-            
             {wallet ? (
-              <div className="flex items-center gap-5 bg-slate-800/80 border border-white/10 pr-6 pl-2 py-2 rounded-full shadow-xl backdrop-blur-md transform hover:scale-105 transition-transform">
+              <div className="flex items-center gap-5 bg-slate-800/80 border border-white/10 pr-6 pl-2 py-2 rounded-full shadow-xl backdrop-blur-md">
                 <div className="flex items-center gap-2 bg-slate-900 border border-white/5 px-4 py-2 rounded-full shadow-inner">
                   <Wallet size={16} className="text-blue-400" />
                   <span className="text-sm font-mono font-bold text-white tracking-tight">{parseFloat(balance).toFixed(4)} ETH</span>
@@ -624,29 +724,24 @@ export default function AdvancedChessPlatform() {
                 className="relative px-8 py-3 rounded-full font-bold text-sm text-white bg-blue-600 hover:bg-blue-500 transition-all hover:scale-105 active:scale-95 shadow-[0_0_20px_rgba(37,99,235,0.4)] border border-blue-400/20 overflow-hidden group"
               >
                 <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300"></div>
-                <span className="relative flex items-center gap-2">
-                  <Zap size={18} fill="currentColor" /> Connect Wallet
-                </span>
+                <span className="relative flex items-center gap-2"><Zap size={18} fill="currentColor" /> Connect Wallet</span>
               </button>
             )}
           </div>
         </div>
       </nav>
 
-      {/* --- MAIN DASHBOARD --- */}
       <main className="max-w-[1400px] mx-auto px-6 py-12 flex flex-col lg:flex-row gap-10 relative z-10">
         
-        {/* LEFT PANEL: COMMAND CENTER */}
+        {/* LEFT PANEL */}
         <div className="w-full lg:w-[420px] flex flex-col gap-6">
-          
-          {/* Status Feed Card */}
           <div className="glass-card-3d bg-slate-800/60 backdrop-blur-md border border-white/10 rounded-2xl p-5 shadow-lg relative overflow-hidden">
              <div className="absolute top-0 right-0 w-20 h-20 bg-blue-500/10 rounded-full blur-xl"></div>
               <div className="flex items-center gap-4 relative z-10">
                 <div className={`p-3 rounded-xl shadow-lg border border-white/10 ${
-                   statusType === 'error' ? 'bg-red-500/20 text-red-400 shadow-[0_0_15px_rgba(239,68,68,0.3)]' :
-                   statusType === 'success' ? 'bg-emerald-500/20 text-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.3)]' :
-                   'bg-blue-500/20 text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.3)]'
+                   statusType === 'error' ? 'bg-red-500/20 text-red-400' :
+                   statusType === 'success' ? 'bg-emerald-500/20 text-emerald-400' :
+                   'bg-blue-500/20 text-blue-400'
                 }`}>
                   {statusType === 'loading' ? <Loader2 size={24} className="animate-spin"/> : 
                    statusType === 'error' ? <AlertCircle size={24}/> : 
@@ -654,20 +749,15 @@ export default function AdvancedChessPlatform() {
                    <Activity size={24}/>}
                 </div>
                 <div>
-                  <h2 className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1 flex items-center gap-2">
-                    System Feed
-                  </h2>
+                  <h2 className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1 flex items-center gap-2">System Feed</h2>
                   <p className="text-sm font-semibold text-white leading-snug">{status}</p>
                 </div>
               </div>
           </div>
 
-          {/* Lobby & Actions Card */}
           <div className="glass-card-3d bg-slate-800/80 backdrop-blur-xl border border-white/10 rounded-3xl p-8 shadow-2xl flex flex-col gap-8 relative overflow-hidden group">
-            {/* Background Chess Image for Lobby */}
             <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1529699211952-734e80c4d42b?q=80&w=2671&auto=format&fit=crop')] bg-cover bg-center opacity-20 mix-blend-overlay transition-opacity duration-500 group-hover:opacity-30"></div>
             
-            {/* Header */}
             <div className="relative z-10 border-b border-white/10 pb-6">
                <div className="flex justify-between items-start">
                   <div>
@@ -681,16 +771,13 @@ export default function AdvancedChessPlatform() {
                </div>
             </div>
 
-            {/* Actions */}
             <div className="space-y-4 relative z-10">
                 <button 
                   onClick={createGame}
                   disabled={!wallet || gameId}
-                  className="w-full group bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white py-4 rounded-xl font-bold disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_5px_20px_rgba(37,99,235,0.3)] hover:shadow-[0_8px_30px_rgba(37,99,235,0.4)] transition-all flex items-center justify-between px-6 transform hover:-translate-y-1"
+                  className="w-full group bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white py-4 rounded-xl font-bold disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_5px_20px_rgba(37,99,235,0.3)] transition-all flex items-center justify-between px-6 transform hover:-translate-y-1"
                 >
-                    <span className="flex items-center gap-2 text-sm uppercase tracking-wide">
-                        <Swords size={18} /> Create New Match
-                    </span>
+                    <span className="flex items-center gap-2 text-sm uppercase tracking-wide"><Swords size={18} /> Create New Match</span>
                     <div className="bg-white/20 p-1 rounded-full group-hover:bg-white/30 transition-colors">
                       <ChevronRight size={16} className="group-hover:translate-x-0.5 transition-transform"/>
                     </div>
@@ -711,21 +798,12 @@ export default function AdvancedChessPlatform() {
                       onChange={(e) => setInputGameId(e.target.value)}
                       className="w-full bg-slate-900/50 border border-white/10 rounded-xl px-4 py-3.5 text-white placeholder-slate-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none font-mono text-sm transition-all focus:bg-slate-900"
                     />
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within/input:text-blue-400 transition-colors">
-                        <Terminal size={14}/>
-                    </div>
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within/input:text-blue-400 transition-colors"><Terminal size={14}/></div>
                   </div>
-                  <button 
-                    onClick={joinGame}
-                    disabled={!canJoin} 
-                    className="bg-slate-700 hover:bg-slate-600 border border-white/5 text-white px-8 rounded-xl font-bold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-md whitespace-nowrap hover:shadow-lg transform hover:-translate-y-0.5"
-                  >
-                    Join Game
-                  </button>
+                  <button onClick={joinGame} disabled={!canJoin} className="bg-slate-700 hover:bg-slate-600 border border-white/5 text-white px-8 rounded-xl font-bold text-sm transition-all disabled:opacity-50 shadow-md">Join Game</button>
                 </div>
             </div>
 
-            {/* Active Session Card */}
             {gameId && (
                <div className="relative z-10 bg-slate-900/80 border border-emerald-500/30 p-5 rounded-2xl flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-4 shadow-inner ring-1 ring-emerald-500/20">
                  <div className="flex justify-between items-center border-b border-white/5 pb-3">
@@ -736,14 +814,8 @@ export default function AdvancedChessPlatform() {
                       </div>
                       <span className="text-[10px] font-bold uppercase tracking-widest">Session Active</span>
                    </div>
-                   <button 
-                    onClick={() => navigator.clipboard.writeText(gameId)}
-                    className="flex items-center gap-2 text-slate-400 hover:text-white font-mono font-bold text-[10px] bg-white/5 px-2 py-1 rounded hover:bg-white/10 transition-colors"
-                   >
-                     ID: {gameId.slice(0,8)}... <Copy size={12}/>
-                   </button>
+                   <button onClick={() => navigator.clipboard.writeText(gameId)} className="flex items-center gap-2 text-slate-400 hover:text-white font-mono font-bold text-[10px] bg-white/5 px-2 py-1 rounded hover:bg-white/10 transition-colors">ID: {gameId.slice(0,8)}... <Copy size={12}/></button>
                  </div>
-                 
                  {gameData && (
                    <div className="space-y-3">
                       <div className={`flex justify-between items-center p-3 rounded-lg border transition-all ${gameData.p1.toLowerCase() === wallet.toLowerCase() ? "bg-blue-500/10 border-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.1)]" : "bg-white/5 border-white/5"}`}>
@@ -753,7 +825,6 @@ export default function AdvancedChessPlatform() {
                         </div>
                         <span className="text-xs font-mono text-white bg-black/20 px-2 py-1 rounded border border-white/5">{shortAddr(gameData.p1)}</span>
                       </div>
-                      
                       <div className={`flex justify-between items-center p-3 rounded-lg border transition-all ${gameData.p2 !== window.ethers.ZeroAddress ? "bg-white/5 border-white/5" : "bg-white/5 border-dashed border-white/10"}`}>
                         <div className="flex items-center gap-3">
                             <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-600 flex items-center justify-center text-white font-bold text-xs shadow-md">P2</div>
@@ -766,55 +837,11 @@ export default function AdvancedChessPlatform() {
                </div>
             )}
           </div>
-
-          {/* SETTLEMENT PROTOCOL */}
-          {(loserSignature || (game && game.in_checkmate())) && (
-            <div className="relative group animate-in zoom-in-95 duration-500">
-              <div className="absolute inset-0 bg-gradient-to-br from-orange-500 to-red-600 rounded-[2rem] blur opacity-20 group-hover:opacity-30 transition duration-500"></div>
-              <div className="glass-card-3d relative bg-slate-900 border border-orange-500/30 rounded-[2rem] p-8 shadow-2xl overflow-hidden">
-                <div className="flex items-center gap-3 mb-6 text-orange-400 font-bold text-sm uppercase tracking-wider relative z-10">
-                  <ShieldCheck size={20}/> 
-                  <span>Settlement Required</span>
-                </div>
-                
-                <div className="space-y-3 relative z-10">
-                  <button 
-                    onClick={signDefeat}
-                    disabled={loserSignature || !isMyTurnToSign} 
-                    className={`w-full py-4 rounded-xl border flex items-center justify-center gap-3 text-sm font-bold transition-all relative overflow-hidden transform hover:-translate-y-1 ${
-                      loserSignature ? "bg-emerald-900/20 border-emerald-500/30 text-emerald-400" : 
-                      isMyTurnToSign ? "bg-orange-500/10 border-orange-500/30 text-orange-200 hover:bg-orange-500/20 cursor-pointer shadow-lg" : 
-                      "bg-slate-800/50 border-white/5 text-slate-500 cursor-not-allowed opacity-50"
-                    }`}
-                  >
-                    {loserSignature ? <CheckCircle2 size={18}/> : <PenTool size={18}/>}
-                    {loserSignature ? "Loss Verified On-Chain" : "Sign Proof of Loss"}
-                  </button>
-
-                  <button 
-                    onClick={claimPrize}
-                    disabled={!loserSignature || !isMyTurnToClaim}
-                    className={`w-full py-4 rounded-xl font-bold transition-all shadow-xl flex items-center justify-center gap-2 transform hover:-translate-y-1 ${
-                      (!loserSignature || !isMyTurnToClaim) 
-                      ? "bg-slate-800 text-slate-500 cursor-not-allowed border border-white/5" 
-                      : "bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-400 hover:to-green-500 text-white shadow-[0_5px_20px_rgba(16,185,129,0.3)]"
-                    }`}
-                  >
-                    <Trophy size={18} className={isMyTurnToClaim ? "animate-bounce" : ""} /> 
-                    Claim 2.0 ETH Payout
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* RIGHT PANEL: IMMERSIVE BOARD */}
         <div className="w-full lg:flex-1 flex flex-col items-center relative z-10 perspective-container">
-          
-          {/* Board Container */}
           <div className="relative group w-full max-w-[700px] transform transition-transform duration-700 hover:rotate-x-1">
-             {/* The Plinth */}
             <div className="relative bg-slate-800 p-2 rounded-2xl border border-white/10 shadow-[0_30px_60px_-15px_rgba(0,0,0,0.6)]">
               <div className="bg-[#1e293b] rounded-xl p-8 border border-white/5 shadow-inner relative">
                  <div className="w-full rounded-lg overflow-hidden border-[8px] border-slate-900 shadow-2xl relative z-10">
@@ -822,20 +849,18 @@ export default function AdvancedChessPlatform() {
                      game={game} 
                      onMove={onMove}
                      orientation={(!isPlayer1 && gameId) ? 'black' : 'white'}
+                     onGameEndAction={onGameEndAction}
+                     gameEndState={gameEndState}
+                     setPastedSignature={setPastedSignature}
                    />
                  </div>
               </div>
             </div>
           </div>
           
-          {/* Move History Terminal */}
           <div className="mt-8 w-full max-w-[700px] bg-slate-800/80 backdrop-blur-md border border-white/10 rounded-2xl p-6 min-h-[140px] shadow-lg flex flex-col relative overflow-hidden glass-card-3d">
-             <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent skew-x-12 pointer-events-none"></div>
-             
              <div className="flex justify-between items-center mb-4 relative z-10 border-b border-white/5 pb-2">
-               <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                 <Terminal size={14} className="text-blue-400"/> Game Ledger
-               </h3>
+               <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2"><Terminal size={14} className="text-blue-400"/> Game Ledger</h3>
                <div className="flex items-center gap-2">
                  <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div>
                  <span className="text-[10px] font-mono text-slate-400">LIVE SYNC</span>
@@ -856,7 +881,6 @@ export default function AdvancedChessPlatform() {
                )}
              </div>
           </div>
-
         </div>
       </main>
     </div>
